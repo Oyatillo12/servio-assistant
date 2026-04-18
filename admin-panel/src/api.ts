@@ -1,4 +1,4 @@
-const API = '/api';
+const API = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -48,9 +48,9 @@ export interface Client {
   slug: string;
   systemPrompt: string;
   isActive: boolean;
-  type: 'order' | 'lead';
-  defaultLang: 'uz' | 'ru' | 'en';
-  currency: 'UZS' | 'USD' | 'RUB';
+  type: "order" | "lead";
+  defaultLang: "uz" | "ru" | "en";
+  currency: "UZS" | "USD" | "RUB";
   hasProducts: boolean;
   hasServices: boolean;
   adminChatId: number | null;
@@ -66,7 +66,7 @@ export interface AuthUser {
   login: string;
   email: string | null;
   phone: string | null;
-  role: 'super_admin' | 'client_admin';
+  role: "super_admin" | "client_admin";
   clientId: number | null;
   isActive: boolean;
 }
@@ -76,7 +76,7 @@ export interface AdminUser {
   login: string;
   email: string | null;
   phone: string | null;
-  role: 'super_admin' | 'client_admin';
+  role: "super_admin" | "client_admin";
   clientId: number | null;
   isActive: boolean;
   createdAt: string;
@@ -89,7 +89,11 @@ export interface DashboardStats {
   messagesToday: number;
   totalOrders: number;
   totalLeads: number;
-  recentActivity: Array<{ clientId: number; clientName: string; messageCount: number }>;
+  recentActivity: Array<{
+    clientId: number;
+    clientName: string;
+    messageCount: number;
+  }>;
   recentOrders: OrderData[];
   recentLeads: LeadData[];
 }
@@ -98,7 +102,7 @@ export interface ChatMessage {
   id: number;
   chatId: number;
   clientId: number;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   message: string;
   createdAt: string;
 }
@@ -136,20 +140,22 @@ export interface LeadData {
 // ── HTTP helper ────────────────────────────────────────────
 
 function getToken(): string | null {
-  return localStorage.getItem('token');
+  return localStorage.getItem("token");
 }
 
 async function request<T>(url: string, opts?: RequestInit): Promise<T> {
   const token = getToken();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const res = await fetch(url, { ...opts, headers });
 
   if (res.status === 401) {
-    localStorage.removeItem('token');
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
+    localStorage.removeItem("token");
+    window.location.href = "/login";
+    throw new Error("Unauthorized");
   }
 
   if (!res.ok) {
@@ -157,7 +163,7 @@ async function request<T>(url: string, opts?: RequestInit): Promise<T> {
     throw new Error(`${res.status}: ${body}`);
   }
 
-  if (res.status === 204 || res.headers.get('content-length') === '0') {
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
     return undefined as T;
   }
   return res.json();
@@ -169,7 +175,7 @@ export const api = {
   auth: {
     login: (login: string, password: string) =>
       request<{ token: string; user: AuthUser }>(`${API}/auth/login`, {
-        method: 'POST',
+        method: "POST",
         body: JSON.stringify({ login, password }),
       }),
     me: () => request<AuthUser>(`${API}/auth/me`),
@@ -177,18 +183,30 @@ export const api = {
 
   users: {
     list: () => request<AdminUser[]>(`${API}/auth/users`),
-    create: (data: { login: string; password: string; email?: string; phone?: string; role?: string; clientId?: number }) =>
-      request<AdminUser>(`${API}/auth/users`, { method: 'POST', body: JSON.stringify(data) }),
+    create: (data: {
+      login: string;
+      password: string;
+      email?: string;
+      phone?: string;
+      role?: string;
+      clientId?: number;
+    }) =>
+      request<AdminUser>(`${API}/auth/users`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
     resetPassword: (id: number, newPassword: string) =>
       request<void>(`${API}/auth/users/${id}/reset-password`, {
-        method: 'PATCH',
+        method: "PATCH",
         body: JSON.stringify({ newPassword }),
       }),
     toggleActive: (id: number) =>
-      request<{ isActive: boolean }>(`${API}/auth/users/${id}/active`, { method: 'PATCH' }),
+      request<{ isActive: boolean }>(`${API}/auth/users/${id}/active`, {
+        method: "PATCH",
+      }),
     changePassword: (currentPassword: string, newPassword: string) =>
       request<void>(`${API}/auth/users/me/password`, {
-        method: 'PATCH',
+        method: "PATCH",
         body: JSON.stringify({ currentPassword, newPassword }),
       }),
   },
@@ -196,52 +214,87 @@ export const api = {
   clients: {
     list: () => request<Client[]>(`${API}/clients`),
     get: (id: number) => request<Client>(`${API}/clients/${id}`),
-    create: (data: Partial<Client> & { adminCredentials?: { login: string; password: string } }) =>
-      request<Client>(`${API}/clients`, { method: 'POST', body: JSON.stringify(data) }),
+    create: (
+      data: Partial<Client> & {
+        adminCredentials?: { login: string; password: string };
+      },
+    ) =>
+      request<Client>(`${API}/clients`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
     update: (id: number, data: Partial<Client>) =>
-      request<Client>(`${API}/clients/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+      request<Client>(`${API}/clients/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
     remove: (id: number) =>
-      request<void>(`${API}/clients/${id}`, { method: 'DELETE' }),
+      request<void>(`${API}/clients/${id}`, { method: "DELETE" }),
   },
 
   products: {
-    add: (clientId: number, data: { name: string; description?: string; price?: number }) =>
+    add: (
+      clientId: number,
+      data: { name: string; description?: string; price?: number },
+    ) =>
       request<Product>(`${API}/clients/${clientId}/products`, {
-        method: 'POST',
+        method: "POST",
         body: JSON.stringify(data),
       }),
-    update: (productId: number, data: { name?: string; description?: string; price?: number; isActive?: boolean }) =>
+    update: (
+      productId: number,
+      data: {
+        name?: string;
+        description?: string;
+        price?: number;
+        isActive?: boolean;
+      },
+    ) =>
       request<Product>(`${API}/clients/products/${productId}`, {
-        method: 'PATCH',
+        method: "PATCH",
         body: JSON.stringify(data),
       }),
     remove: (productId: number) =>
-      request<void>(`${API}/clients/products/${productId}`, { method: 'DELETE' }),
+      request<void>(`${API}/clients/products/${productId}`, {
+        method: "DELETE",
+      }),
   },
 
   services: {
-    add: (clientId: number, data: { name: string; description?: string; price?: number }) =>
+    add: (
+      clientId: number,
+      data: { name: string; description?: string; price?: number },
+    ) =>
       request<Service>(`${API}/clients/${clientId}/services`, {
-        method: 'POST',
+        method: "POST",
         body: JSON.stringify(data),
       }),
-    update: (serviceId: number, data: { name?: string; description?: string; price?: number; isActive?: boolean }) =>
+    update: (
+      serviceId: number,
+      data: {
+        name?: string;
+        description?: string;
+        price?: number;
+        isActive?: boolean;
+      },
+    ) =>
       request<Service>(`${API}/clients/services/${serviceId}`, {
-        method: 'PATCH',
+        method: "PATCH",
         body: JSON.stringify(data),
       }),
     remove: (serviceId: number) =>
-      request<void>(`${API}/clients/services/${serviceId}`, { method: 'DELETE' }),
+      request<void>(`${API}/clients/services/${serviceId}`, {
+        method: "DELETE",
+      }),
   },
 
   orders: {
     byClient: (clientId: number) =>
       request<OrderData[]>(`${API}/orders/client/${clientId}`),
-    get: (id: number) =>
-      request<OrderData>(`${API}/orders/${id}`),
+    get: (id: number) => request<OrderData>(`${API}/orders/${id}`),
     updateStatus: (id: number, status: string) =>
       request<void>(`${API}/orders/${id}/status`, {
-        method: 'PATCH',
+        method: "PATCH",
         body: JSON.stringify({ status }),
       }),
   },
@@ -249,11 +302,10 @@ export const api = {
   leads: {
     byClient: (clientId: number) =>
       request<LeadData[]>(`${API}/leads/client/${clientId}`),
-    get: (id: number) =>
-      request<LeadData>(`${API}/leads/${id}`),
+    get: (id: number) => request<LeadData>(`${API}/leads/${id}`),
     updateStatus: (id: number, status: string) =>
       request<void>(`${API}/leads/${id}/status`, {
-        method: 'PATCH',
+        method: "PATCH",
         body: JSON.stringify({ status }),
       }),
   },
@@ -267,9 +319,13 @@ export const api = {
   },
 
   ai: {
-    generateDescription: (data: { name: string; type: 'product' | 'service'; keywords?: string }) =>
+    generateDescription: (data: {
+      name: string;
+      type: "product" | "service";
+      keywords?: string;
+    }) =>
       request<{ description: string }>(`${API}/ai/generate-description`, {
-        method: 'POST',
+        method: "POST",
         body: JSON.stringify(data),
       }),
   },
