@@ -1,0 +1,1 @@
+export const BOT_URL = "https://t.me/i2ai_helper_bot";
