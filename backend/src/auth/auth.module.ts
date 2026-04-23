@@ -23,7 +23,7 @@ import { RolesGuard } from './guards/roles.guard.js';
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy, RolesGuard],
-  exports: [AuthService, RolesGuard],
+  exports: [AuthService, RolesGuard, JwtModule],
 })
 export class AuthModule implements OnModuleInit {
   constructor(private readonly authService: AuthService) {}

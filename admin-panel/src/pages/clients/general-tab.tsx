@@ -20,6 +20,9 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 
 import { PromptPreview } from "./prompt-preview";
+import { getStarterPrompt } from "./prompt-templates";
+import { BotTokenSection } from "./bot-token-section";
+import { AiProviderSection } from "./ai-provider-section";
 import type { ClientDetailContext } from "./client-detail-layout";
 
 export function GeneralTab() {
@@ -74,15 +77,17 @@ export function GeneralTab() {
 
       await api.clients.update(client.id, {
         name,
-        slug,
         systemPrompt,
-        isActive,
-        hasProducts,
-        hasServices,
-        type: botType,
-        defaultLang,
-        currency,
         adminChatId: adminChatIdNum,
+        ...(isSuperAdmin && {
+          slug,
+          isActive,
+          hasProducts,
+          hasServices,
+          type: botType,
+          defaultLang,
+          currency,
+        }),
       });
       toast.success(t("settings_saved"));
       reload();
@@ -94,14 +99,15 @@ export function GeneralTab() {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-3xl">
+    <form onSubmit={handleSubmit} className="space-y-6">
       <Card>
         <CardHeader>
           <CardTitle>{t("core_settings")}</CardTitle>
           <CardDescription>{t("core_settings_desc")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className={`grid grid-cols-1 gap-4 ${isSuperAdmin ? "sm:grid-cols-2" : ""}`}>
             <div className="space-y-2">
               <Label htmlFor="name">{t("client_name")}</Label>
               <Input
@@ -111,69 +117,86 @@ export function GeneralTab() {
                 required
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="slug">{t("bot_slug")}</Label>
-              <Input
-                id="slug"
-                value={slug}
-                onChange={(e) => setSlug(e.target.value)}
-                required
-                pattern="[a-z0-9\-]+"
-                title={t("slug_hint")}
-                className="font-mono bg-muted/30"
-              />
-              <p className="text-[11px] text-muted-foreground">
-                {t("telegram_entry")}{" "}
-                <span className="font-mono text-foreground">
-                  t.me/YourBot?start={slug || "..."}
-                </span>
-              </p>
-            </div>
+            {isSuperAdmin ? (
+              <div className="space-y-2">
+                <Label htmlFor="slug">{t("bot_slug")}</Label>
+                <Input
+                  id="slug"
+                  value={slug}
+                  onChange={(e) => setSlug(e.target.value)}
+                  required
+                  pattern="[a-z0-9\-]+"
+                  title={t("slug_hint")}
+                  className="font-mono bg-muted/30"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  {t("telegram_entry")}{" "}
+                  <span className="font-mono text-foreground">
+                    t.me/YourBot?start={slug || "..."}
+                  </span>
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label>{t("bot_slug")}</Label>
+                <div className="h-9 px-3 flex items-center rounded-md border bg-muted/30 font-mono text-sm text-muted-foreground">
+                  {slug}
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {t("telegram_entry")}{" "}
+                  <span className="font-mono text-foreground">
+                    t.me/YourBot?start={slug || "..."}
+                  </span>
+                </p>
+              </div>
+            )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="bot-type">{t("bot_type")}</Label>
-              <select
-                id="bot-type"
-                value={botType}
-                onChange={(e) => setBotType(e.target.value as "order" | "lead")}
-                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="order">{t("bot_type_order")}</option>
-                <option value="lead">{t("bot_type_lead")}</option>
-              </select>
-              <p className="text-[11px] text-muted-foreground">{t("bot_type_hint")}</p>
+          {isSuperAdmin && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="bot-type">{t("bot_type")}</Label>
+                <select
+                  id="bot-type"
+                  value={botType}
+                  onChange={(e) => setBotType(e.target.value as "order" | "lead")}
+                  className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="order">{t("bot_type_order")}</option>
+                  <option value="lead">{t("bot_type_lead")}</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">{t("bot_type_hint")}</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="default-lang">{t("default_language")}</Label>
+                <select
+                  id="default-lang"
+                  value={defaultLang}
+                  onChange={(e) => setDefaultLang(e.target.value as "uz" | "ru" | "en")}
+                  className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="uz">O'zbek</option>
+                  <option value="ru">Русский</option>
+                  <option value="en">English</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">{t("default_language_hint")}</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="currency">{t("currency")}</Label>
+                <select
+                  id="currency"
+                  value={currency}
+                  onChange={(e) => setCurrency(e.target.value as "UZS" | "USD" | "RUB")}
+                  className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="USD">USD ($)</option>
+                  <option value="UZS">UZS (so'm)</option>
+                  <option value="RUB">RUB (₽)</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">{t("currency_hint")}</p>
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="default-lang">{t("default_language")}</Label>
-              <select
-                id="default-lang"
-                value={defaultLang}
-                onChange={(e) => setDefaultLang(e.target.value as "uz" | "ru" | "en")}
-                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="uz">O'zbek</option>
-                <option value="ru">Русский</option>
-                <option value="en">English</option>
-              </select>
-              <p className="text-[11px] text-muted-foreground">{t("default_language_hint")}</p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="currency">{t("currency")}</Label>
-              <select
-                id="currency"
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value as "UZS" | "USD" | "RUB")}
-                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="USD">USD ($)</option>
-                <option value="UZS">UZS (so'm)</option>
-                <option value="RUB">RUB (₽)</option>
-              </select>
-              <p className="text-[11px] text-muted-foreground">{t("currency_hint")}</p>
-            </div>
-          </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="admin-chat-id">{t("admin_chat_id")}</Label>
@@ -194,7 +217,16 @@ export function GeneralTab() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="prompt">{t("system_prompt")}</Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="prompt">{t("system_prompt")}</Label>
+              <button
+                type="button"
+                onClick={() => setSystemPrompt(getStarterPrompt(botType, defaultLang))}
+                className="text-[11px] text-primary hover:underline"
+              >
+                {t("use_starter_template")}
+              </button>
+            </div>
             <Textarea
               id="prompt"
               value={systemPrompt}
@@ -208,13 +240,15 @@ export function GeneralTab() {
 
           <PromptPreview systemPrompt={systemPrompt} client={client} />
 
-          <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/20">
-            <div>
-              <Label className="text-base">{t("active_status")}</Label>
-              <p className="text-[11px] text-muted-foreground mt-0.5">{t("active_status_hint")}</p>
+          {isSuperAdmin && (
+            <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/20">
+              <div>
+                <Label className="text-base">{t("active_status")}</Label>
+                <p className="text-[11px] text-muted-foreground mt-0.5">{t("active_status_hint")}</p>
+              </div>
+              <Switch checked={isActive} onCheckedChange={setIsActive} />
             </div>
-            <Switch checked={isActive} onCheckedChange={setIsActive} />
-          </div>
+          )}
         </CardContent>
       </Card>
 
@@ -256,5 +290,9 @@ export function GeneralTab() {
         </Button>
       </div>
     </form>
+
+      <AiProviderSection client={client} onUpdated={reload} />
+      <BotTokenSection client={client} onUpdated={reload} />
+    </div>
   );
 }

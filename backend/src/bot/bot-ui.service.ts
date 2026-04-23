@@ -3,6 +3,7 @@ import type TelegramBot from 'node-telegram-bot-api';
 import { I18nService, type Lang } from '../i18n/i18n.service.js';
 import type { Product } from '../client/entities/product.entity.js';
 import type { BotConfig } from '../client/entities/client.entity.js';
+import { formatPrice, type Currency } from '../common/utils/currency.util.js';
 
 /** Default icons for each menu button */
 const DEFAULT_ICONS: Record<string, string> = {
@@ -134,10 +135,11 @@ export class BotUiService {
   productListKeyboard(
     products: Product[],
     lang: Lang,
+    currency: Currency = 'USD',
   ): TelegramBot.InlineKeyboardMarkup {
     const rows: TelegramBot.InlineKeyboardButton[][] = products.map((p) => [
       {
-        text: `${p.name}${p.price != null ? ` — $${p.price}` : ''}`,
+        text: `${p.name}${p.price != null ? ` — ${formatPrice(p.price, currency)}` : ''}`,
         callback_data: `product:${p.id}`,
       },
     ]);

@@ -1,4 +1,4 @@
-import { LayoutDashboard, Users, Bot, Shield } from "lucide-react";
+import { LayoutDashboard, Users, Bot, Shield, MessageCircle } from "lucide-react";
 import type { AuthUser } from "@/api";
 import type { TranslationKey } from "@/i18n/localeNames";
 
@@ -41,6 +41,13 @@ export const navigationItems: NavItem[] = [
     icon: Bot,
     roles: ["client_admin"],
     dynamic: true,
+  },
+  {
+    labelKey: "nav_live_chat",
+    label: "Live Chat",
+    path: "/live-chat",
+    icon: MessageCircle,
+    roles: ["super_admin", "client_admin"],
   },
 ];
 

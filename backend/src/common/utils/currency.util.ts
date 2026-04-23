@@ -1,4 +1,10 @@
-export function formatPrice(price: number, currency: 'UZS' | 'USD' | 'RUB' | string): string {
+export type Currency = 'UZS' | 'USD' | 'RUB';
+
+export function formatPrice(
+  price: number | string | null | undefined,
+  currency: Currency | string = 'USD',
+): string {
+  if (price == null || price === '') return '';
   const numPrice = Number(price);
   if (isNaN(numPrice)) return String(price);
 

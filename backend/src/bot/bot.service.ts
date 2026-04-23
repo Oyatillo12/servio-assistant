@@ -1,80 +1,89 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
 import { AiService } from '../ai/ai.service.js';
+import { SalesAiService } from '../ai/sales-ai.service.js';
 import { ClientService } from '../client/client.service.js';
 import { ChatService } from '../chat/chat.service.js';
 import { I18nService, type Lang } from '../i18n/i18n.service.js';
 import { BotUiService } from './bot-ui.service.js';
 import { formatPrice } from '../common/utils/currency.util.js';
 import { FlowRouterService } from '../flow/flow-router.service.js';
+import type { BotBinding } from './bot-registry.service.js';
+import type { Client } from '../client/entities/client.entity.js';
 
 /** Delay to simulate natural typing (ms) */
 const TYPING_DELAY_MS = 600;
 
 @Injectable()
-export class BotService implements OnModuleInit {
+export class BotService {
   private readonly logger = new Logger(BotService.name);
-  private bot!: TelegramBot;
 
   constructor(
-    private readonly config: ConfigService,
     private readonly aiService: AiService,
+    @Inject(forwardRef(() => ClientService))
     private readonly clientService: ClientService,
     private readonly chatService: ChatService,
+    private readonly salesAi: SalesAiService,
     private readonly i18n: I18nService,
     private readonly ui: BotUiService,
     private readonly flowRouter: FlowRouterService,
   ) {}
 
-  onModuleInit() {
-    const token = this.config.getOrThrow<string>('TELEGRAM_BOT_TOKEN');
-    this.bot = new TelegramBot(token, { polling: true });
-
-    this.registerHandlers();
-    this.logger.log('Telegram bot started (polling)');
-  }
-
   // ═══════════════════════════════════════════════════════
-  //  Handler Registration
+  //  Handler Registration (called per bot instance)
   // ═══════════════════════════════════════════════════════
 
-  private registerHandlers() {
-    this.bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
-      void this.handleStart(msg, match?.[1]?.trim());
+  registerHandlers(bot: TelegramBot, binding: BotBinding): void {
+    bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
+      void this.handleStart(bot, binding, msg, match?.[1]?.trim());
     });
 
-    this.bot.onText(
+    bot.onText(
       /\/lang/,
-      (msg) => void this.handleLanguageCommand(msg.chat.id),
+      (msg) => void this.handleLanguageCommand(bot, msg.chat.id),
     );
-    this.bot.onText(
+    bot.onText(
       /\/menu/,
-      (msg) => void this.handleMenuCommand(msg.chat.id),
+      (msg) => void this.handleMenuCommand(bot, msg.chat.id),
     );
 
-    this.bot.on('callback_query', (query) => void this.handleCallback(query));
-    this.bot.on('message', (msg) => void this.handleMessage(msg));
+    bot.on(
+      'callback_query',
+      (query) => void this.handleCallback(bot, binding, query),
+    );
+    bot.on('message', (msg) => void this.handleMessage(bot, binding, msg));
   }
 
   // ═══════════════════════════════════════════════════════
   //  /start command
   // ═══════════════════════════════════════════════════════
 
-  private async handleStart(msg: TelegramBot.Message, slug?: string) {
+  private async handleStart(
+    bot: TelegramBot,
+    binding: BotBinding,
+    msg: TelegramBot.Message,
+    slug?: string,
+  ) {
     const chatId = msg.chat.id;
 
-    if (!slug) {
-      await this.sendTyping(chatId);
-      void this.bot.sendMessage(chatId, this.i18n.t('welcome', 'en'), {
-        reply_markup: this.ui.removeKeyboard(),
-      });
-      return;
-    }
+    // Per-client bot: clientId is fixed by binding, ignore slug
+    const client =
+      binding.clientId != null
+        ? await this.clientService.findOne(binding.clientId).catch(() => null)
+        : slug
+          ? await this.clientService.findBySlug(slug)
+          : null;
 
-    const client = await this.clientService.findBySlug(slug);
     if (!client) {
-      void this.bot.sendMessage(chatId, this.i18n.t('unknown_provider', 'en'));
+      if (binding.clientId == null && !slug) {
+        // General bot, no slug — generic welcome
+        await this.sendTyping(bot, chatId);
+        void bot.sendMessage(chatId, this.i18n.t('welcome', 'uz'), {
+          reply_markup: this.ui.removeKeyboard(),
+        });
+        return;
+      }
+      void bot.sendMessage(chatId, this.i18n.t('unknown_provider', 'uz'));
       return;
     }
 
@@ -93,14 +102,51 @@ export class BotService implements OnModuleInit {
     await this.chatService.setSession(chatId, client.id, lang);
     this.flowRouter.clearFlow(chatId);
 
-    await this.sendTyping(chatId);
+    await this.sendTyping(bot, chatId);
 
+    // ── Lead-type: AI-generated opening hook ──────────────
+    if (client.type === 'lead') {
+      const catalog = this.buildCatalogString(client);
+      const syntheticMsg = '[User just opened the chat for the first time]';
+
+      // Persist the synthetic start message so the history always begins with
+      // a 'user' entry — required by Gemini and keeps context coherent.
+      await this.chatService.addMessage(chatId, client.id, 'user', syntheticMsg);
+
+      const hook = await this.salesAi.generateSalesReply({
+        chatId,
+        clientId: client.id,
+        userMessage: syntheticMsg,
+        promptContext: {
+          businessName: client.name,
+          businessPitch: client.systemPrompt,
+          lang: lang as 'uz' | 'ru' | 'en',
+          catalog,
+        },
+        aiProvider: client.aiProvider,
+        aiModel: client.aiModel,
+      });
+
+      await this.chatService.addMessage(chatId, client.id, 'assistant', hook);
+
+      void bot.sendMessage(chatId, hook, {
+        parse_mode: 'Markdown',
+        reply_markup: this.minimalLeadKeyboard(lang),
+      });
+
+      this.logger.log(
+        `Chat ${chatId} → client "${client.name}" (lead, AI hook, lang: ${lang})`,
+      );
+      return;
+    }
+
+    // ── Order-type: static welcome + full reply keyboard ──
     const botConfig = client.parsedBotConfig;
     const welcomeMsg = botConfig.welcomeMessage
       ? botConfig.welcomeMessage.replace('{name}', client.name)
       : this.i18n.t('welcome_connected', lang, { name: client.name });
 
-    void this.bot.sendMessage(chatId, welcomeMsg, {
+    void bot.sendMessage(chatId, welcomeMsg, {
       parse_mode: 'Markdown',
       reply_markup: this.ui.mainMenuKeyboard(
         lang,
@@ -111,27 +157,30 @@ export class BotService implements OnModuleInit {
       ),
     });
 
-    this.logger.log(`Chat ${chatId} → client "${client.name}" (lang: ${lang})`);
+    this.logger.log(
+      `Chat ${chatId} → client "${client.name}" (order, lang: ${lang}, bot: ${binding.clientId == null ? 'general' : `client#${client.id}`})`,
+    );
   }
 
   // ═══════════════════════════════════════════════════════
   //  Commands
   // ═══════════════════════════════════════════════════════
 
-  private async handleLanguageCommand(chatId: number) {
+  private async handleLanguageCommand(bot: TelegramBot, chatId: number) {
     const lang = await this.getLang(chatId);
-    await this.sendTyping(chatId);
-    void this.bot.sendMessage(chatId, this.i18n.t('choose_language', lang), {
+    await this.sendTyping(bot, chatId);
+
+    void bot.sendMessage(chatId, this.i18n.t('choose_language', lang), {
       reply_markup: this.ui.languageKeyboard(),
     });
   }
 
-  private async handleMenuCommand(chatId: number) {
+  private async handleMenuCommand(bot: TelegramBot, chatId: number) {
     const lang = await this.getLang(chatId);
     this.flowRouter.clearFlow(chatId);
-    await this.sendTyping(chatId);
+    await this.sendTyping(bot, chatId);
     const client = await this.getClient(chatId);
-    void this.bot.sendMessage(chatId, this.i18n.t('main_menu', lang), {
+    void bot.sendMessage(chatId, this.i18n.t('main_menu', lang), {
       reply_markup: this.ui.mainMenuKeyboard(
         lang,
         client?.parsedBotConfig,
@@ -146,12 +195,16 @@ export class BotService implements OnModuleInit {
   //  Callback Query Router
   // ═══════════════════════════════════════════════════════
 
-  private async handleCallback(query: TelegramBot.CallbackQuery) {
+  private async handleCallback(
+    bot: TelegramBot,
+    binding: BotBinding,
+    query: TelegramBot.CallbackQuery,
+  ) {
     const chatId = query.message?.chat.id;
     const messageId = query.message?.message_id;
     if (!chatId || !query.data) return;
 
-    void this.bot.answerCallbackQuery(query.id);
+    void bot.answerCallbackQuery(query.id);
 
     try {
       const [action, ...rest] = query.data.split(':');
@@ -162,7 +215,7 @@ export class BotService implements OnModuleInit {
       // Clean up inline keyboard from the callback message to avoid clutter
       if (messageId && action !== 'flow' && action !== 'product') {
         try {
-          await this.bot.editMessageReplyMarkup(
+          await bot.editMessageReplyMarkup(
             { inline_keyboard: [] },
             { chat_id: chatId, message_id: messageId },
           );
@@ -173,33 +226,29 @@ export class BotService implements OnModuleInit {
 
       switch (action) {
         case 'lang':
-          await this.handleSetLanguage(chatId, value, messageId);
+          await this.handleSetLanguage(bot, chatId, value, messageId);
           break;
         case 'menu':
-          await this.handleMenuAction(chatId, value, messageId);
+          await this.handleMenuAction(bot, chatId, value, messageId);
           break;
         case 'nav':
-          await this.handleNavigation(chatId, value, messageId);
+          await this.handleNavigation(bot, chatId, value, messageId);
           break;
         case 'product':
-          await this.handleProductDetail(chatId, Number(value), messageId);
+          await this.handleProductDetail(bot, chatId, Number(value), messageId);
           break;
         case 'order_product': {
-          const session = await this.chatService.getSession(chatId);
-          if (!session) break;
+          const clientId = await this.resolveClientId(chatId, binding);
+          if (clientId == null) break;
 
-          let client: import('../client/entities/client.entity.js').Client;
+          let client: Client;
           try {
-            client = await this.clientService.findOne(session.clientId);
+            client = await this.clientService.findOne(clientId);
           } catch {
-            void this.bot.sendMessage(
-              chatId,
-              this.i18n.t('error_fallback', lang),
-            );
+            void bot.sendMessage(chatId, this.i18n.t('error_fallback', lang));
             break;
           }
 
-          // Order flow is only valid for order-type clients with products enabled
           if (client.type !== 'order' || !client.hasProducts) {
             this.logger.warn(
               `order_product callback rejected — client #${client.id} type=${client.type} hasProducts=${client.hasProducts}`,
@@ -208,36 +257,33 @@ export class BotService implements OnModuleInit {
           }
 
           if (messageId) {
-            await this.bot.deleteMessage(chatId, messageId).catch(() => {});
+            await bot.deleteMessage(chatId, messageId).catch(() => {});
           }
 
-          await this.bot.sendMessage(
-            chatId,
-            this.i18n.t('flow_starting', lang),
-            { reply_markup: this.ui.removeKeyboard() },
-          );
+          await bot.sendMessage(chatId, this.i18n.t('flow_starting', lang), {
+            reply_markup: this.ui.removeKeyboard(),
+          });
 
           await this.flowRouter.startFlow(
             chatId,
             client,
-            this.bot,
+            bot,
             lang,
             Number(value),
           );
           break;
         }
         case 'flow':
-          // If "leave_contact" arrives but flow state expired, re-init lead state
           if (value === 'leave_contact' && !this.flowRouter.isInFlow(chatId)) {
-            const session = await this.chatService.getSession(chatId);
-            if (session) {
-              this.flowRouter.initLeadState(chatId, session.clientId);
+            const clientId = await this.resolveClientId(chatId, binding);
+            if (clientId != null) {
+              this.flowRouter.initLeadState(chatId, clientId);
             }
           }
           await this.flowRouter.handleCallback(
             chatId,
             value,
-            this.bot,
+            bot,
             lang,
             query.message?.message_id,
           );
@@ -252,7 +298,7 @@ export class BotService implements OnModuleInit {
       );
       try {
         const lang = await this.getLang(chatId);
-        await this.bot.sendMessage(chatId, this.i18n.t('error_fallback', lang));
+        await bot.sendMessage(chatId, this.i18n.t('error_fallback', lang));
       } catch {
         // ignore secondary failure
       }
@@ -264,6 +310,7 @@ export class BotService implements OnModuleInit {
   // ═══════════════════════════════════════════════════════
 
   private async handleSetLanguage(
+    bot: TelegramBot,
     chatId: number,
     langCode: string,
     messageId?: number,
@@ -272,12 +319,12 @@ export class BotService implements OnModuleInit {
     await this.chatService.setLanguage(chatId, langCode);
 
     if (messageId) {
-      await this.bot.deleteMessage(chatId, messageId).catch(() => {});
+      await bot.deleteMessage(chatId, messageId).catch(() => {});
     }
 
-    await this.sendTyping(chatId);
+    await this.sendTyping(bot, chatId);
     const client = await this.getClient(chatId);
-    void this.bot.sendMessage(chatId, this.i18n.t('language_set', langCode), {
+    void bot.sendMessage(chatId, this.i18n.t('language_set', langCode), {
       reply_markup: this.ui.mainMenuKeyboard(
         langCode,
         client?.parsedBotConfig,
@@ -293,6 +340,7 @@ export class BotService implements OnModuleInit {
   // ═══════════════════════════════════════════════════════
 
   private async handleNavigation(
+    bot: TelegramBot,
     chatId: number,
     target: string,
     messageId?: number,
@@ -302,11 +350,11 @@ export class BotService implements OnModuleInit {
 
     if (target === 'main') {
       if (messageId) {
-        await this.bot.deleteMessage(chatId, messageId).catch(() => {});
+        await bot.deleteMessage(chatId, messageId).catch(() => {});
       }
-      await this.sendTyping(chatId);
+      await this.sendTyping(bot, chatId);
       const client = await this.getClient(chatId);
-      void this.bot.sendMessage(chatId, this.i18n.t('main_menu', lang), {
+      void bot.sendMessage(chatId, this.i18n.t('main_menu', lang), {
         reply_markup: this.ui.mainMenuKeyboard(
           lang,
           client?.parsedBotConfig,
@@ -323,13 +371,14 @@ export class BotService implements OnModuleInit {
   // ═══════════════════════════════════════════════════════
 
   private async handleMenuAction(
+    bot: TelegramBot,
     chatId: number,
     action: string,
     messageId?: number,
   ) {
     const session = await this.chatService.getSession(chatId);
     if (!session) {
-      void this.bot.sendMessage(chatId, this.i18n.t('use_start', 'en'));
+      void bot.sendMessage(chatId, this.i18n.t('use_start', 'en'));
       return;
     }
 
@@ -338,16 +387,16 @@ export class BotService implements OnModuleInit {
 
     switch (action) {
       case 'products':
-        await this.showProducts(chatId, client, lang, messageId);
+        await this.showProducts(bot, chatId, client, lang, messageId);
         break;
       case 'services':
-        await this.showServices(chatId, client, lang, messageId);
+        await this.showServices(bot, chatId, client, lang, messageId);
         break;
       case 'lang':
         if (messageId) {
-          await this.bot.deleteMessage(chatId, messageId).catch(() => {});
+          await bot.deleteMessage(chatId, messageId).catch(() => {});
         }
-        await this.handleLanguageCommand(chatId);
+        await this.handleLanguageCommand(bot, chatId);
         break;
       default:
         this.logger.warn(`Unknown menu action: ${action}`);
@@ -355,8 +404,9 @@ export class BotService implements OnModuleInit {
   }
 
   private async showProducts(
+    bot: TelegramBot,
     chatId: number,
-    client: import('../client/entities/client.entity.js').Client,
+    client: Client,
     lang: Lang,
     messageId?: number,
   ) {
@@ -364,25 +414,29 @@ export class BotService implements OnModuleInit {
 
     if (products.length === 0) {
       if (messageId) {
-        await this.bot
+        await bot
           .editMessageText(this.i18n.t('products_empty', lang), {
             chat_id: chatId,
             message_id: messageId,
           })
           .catch(() => {});
       } else {
-        await this.sendTyping(chatId);
-        void this.bot.sendMessage(chatId, this.i18n.t('products_empty', lang));
+        await this.sendTyping(bot, chatId);
+        void bot.sendMessage(chatId, this.i18n.t('products_empty', lang));
       }
       return;
     }
 
     const text = this.i18n.t('products_title', lang);
-    const reply_markup = this.ui.productListKeyboard(products, lang);
+    const reply_markup = this.ui.productListKeyboard(
+      products,
+      lang,
+      client.currency,
+    );
 
     if (messageId) {
       try {
-        await this.bot.editMessageText(text, {
+        await bot.editMessageText(text, {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'Markdown',
@@ -394,16 +448,17 @@ export class BotService implements OnModuleInit {
       }
     }
 
-    await this.sendTyping(chatId);
-    void this.bot.sendMessage(chatId, text, {
+    await this.sendTyping(bot, chatId);
+    void bot.sendMessage(chatId, text, {
       parse_mode: 'Markdown',
       reply_markup,
     });
   }
 
   private async showServices(
+    bot: TelegramBot,
     chatId: number,
-    client: import('../client/entities/client.entity.js').Client,
+    client: Client,
     lang: Lang,
     messageId?: number,
   ) {
@@ -411,15 +466,15 @@ export class BotService implements OnModuleInit {
 
     if (services.length === 0) {
       if (messageId) {
-        await this.bot
+        await bot
           .editMessageText(this.i18n.t('services_empty', lang), {
             chat_id: chatId,
             message_id: messageId,
           })
           .catch(() => {});
       } else {
-        await this.sendTyping(chatId);
-        void this.bot.sendMessage(chatId, this.i18n.t('services_empty', lang));
+        await this.sendTyping(bot, chatId);
+        void bot.sendMessage(chatId, this.i18n.t('services_empty', lang));
       }
       return;
     }
@@ -445,18 +500,20 @@ export class BotService implements OnModuleInit {
 
     if (messageId) {
       try {
-        await this.bot.editMessageText(text, {
+        await bot.editMessageText(text, {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'Markdown',
           reply_markup,
         });
         return;
-      } catch (e) {}
+      } catch {
+        // fall through
+      }
     }
 
-    await this.sendTyping(chatId);
-    void this.bot.sendMessage(chatId, text, {
+    await this.sendTyping(bot, chatId);
+    void bot.sendMessage(chatId, text, {
       parse_mode: 'Markdown',
       reply_markup,
     });
@@ -465,8 +522,9 @@ export class BotService implements OnModuleInit {
   // ── About (lead: services + Leave Contact CTA) ──────────
 
   private async showAbout(
+    bot: TelegramBot,
     chatId: number,
-    client: import('../client/entities/client.entity.js').Client,
+    client: Client,
     lang: Lang,
   ) {
     const services = client.services.filter((s) => s.isActive);
@@ -482,8 +540,8 @@ export class BotService implements OnModuleInit {
             .join('\n\n')
         : this.i18n.t('services_empty', lang);
 
-    await this.sendTyping(chatId);
-    void this.bot.sendMessage(chatId, text, {
+    await this.sendTyping(bot, chatId);
+    void bot.sendMessage(chatId, text, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
@@ -507,8 +565,9 @@ export class BotService implements OnModuleInit {
   // ── Prices (lead: product price list + Leave Contact CTA) ─
 
   private async showPrices(
+    bot: TelegramBot,
     chatId: number,
-    client: import('../client/entities/client.entity.js').Client,
+    client: Client,
     lang: Lang,
   ) {
     const products = client.products.filter((p) => p.isActive);
@@ -524,8 +583,8 @@ export class BotService implements OnModuleInit {
             .join('\n\n')
         : this.i18n.t('prices_empty', lang);
 
-    await this.sendTyping(chatId);
-    void this.bot.sendMessage(chatId, text, {
+    await this.sendTyping(bot, chatId);
+    void bot.sendMessage(chatId, text, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
@@ -549,6 +608,7 @@ export class BotService implements OnModuleInit {
   // ── Product detail ──────────────────────────────────────
 
   private async handleProductDetail(
+    bot: TelegramBot,
     chatId: number,
     productId: number,
     messageId?: number,
@@ -566,25 +626,30 @@ export class BotService implements OnModuleInit {
     const text = this.i18n.t(templateKey, lang, {
       name: product.name,
       description: product.description || '—',
-      price: product.price != null ? formatPrice(product.price, client.currency) : '',
+      price:
+        product.price != null
+          ? formatPrice(product.price, client.currency)
+          : '',
     });
 
     const reply_markup = this.ui.productDetailKeyboard(productId, lang);
 
     if (messageId) {
       try {
-        await this.bot.editMessageText(text, {
+        await bot.editMessageText(text, {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'Markdown',
           reply_markup,
         });
         return;
-      } catch (e) {}
+      } catch {
+        // fall through
+      }
     }
 
-    await this.sendTyping(chatId);
-    void this.bot.sendMessage(chatId, text, {
+    await this.sendTyping(bot, chatId);
+    void bot.sendMessage(chatId, text, {
       parse_mode: 'Markdown',
       reply_markup,
     });
@@ -594,19 +659,19 @@ export class BotService implements OnModuleInit {
   //  Contact
   // ═══════════════════════════════════════════════════════
 
-  private async showContact(chatId: number) {
+  private async showContact(bot: TelegramBot, chatId: number) {
     const session = await this.chatService.getSession(chatId);
     if (!session) {
-      void this.bot.sendMessage(chatId, this.i18n.t('use_start', 'en'));
+      void bot.sendMessage(chatId, this.i18n.t('use_start', 'en'));
       return;
     }
 
     const lang = (session.lang as Lang) ?? 'en';
     const client = await this.clientService.findOne(session.clientId);
     const botConfig = client.parsedBotConfig;
-    await this.sendTyping(chatId);
+    await this.sendTyping(bot, chatId);
 
-    void this.bot.sendMessage(
+    void bot.sendMessage(
       chatId,
       `${this.i18n.t('contact_title', lang)} ${botConfig.contactPhone || ''}`,
       {
@@ -624,16 +689,35 @@ export class BotService implements OnModuleInit {
   //  Message Handler (main router)
   // ═══════════════════════════════════════════════════════
 
-  private async handleMessage(msg: TelegramBot.Message) {
+  private async handleMessage(
+    bot: TelegramBot,
+    binding: BotBinding,
+    msg: TelegramBot.Message,
+  ) {
     if (!msg.text || msg.text.startsWith('/')) return;
 
     const chatId = msg.chat.id;
 
     try {
-      const session = await this.chatService.getSession(chatId);
+      let session = await this.chatService.getSession(chatId);
+
+      // On a per-client bot the clientId is fixed by binding — auto-provision
+      // a session if the user started typing before /start.
+      if (!session && binding.clientId != null) {
+        const client = await this.clientService
+          .findOne(binding.clientId)
+          .catch(() => null);
+        if (client) {
+          const lang: Lang = this.i18n.isValidLang(client.defaultLang)
+            ? client.defaultLang
+            : 'en';
+          await this.chatService.setSession(chatId, client.id, lang);
+          session = await this.chatService.getSession(chatId);
+        }
+      }
 
       if (!session) {
-        void this.bot.sendMessage(chatId, this.i18n.t('use_start', 'en'));
+        void bot.sendMessage(chatId, this.i18n.t('use_start', 'en'));
         return;
       }
 
@@ -642,33 +726,40 @@ export class BotService implements OnModuleInit {
 
       // 1️⃣ Active flow — route to current flow handler
       if (this.flowRouter.isInFlow(chatId)) {
-        await this.flowRouter.handleMessage(chatId, text, this.bot, lang);
+        await this.flowRouter.handleMessage(chatId, text, bot, lang);
         return;
       }
 
       // 2️⃣ Reply-keyboard button press
-      if (await this.routeMenuButton(chatId, text, lang)) {
+      if (await this.routeMenuButton(bot, chatId, text, lang)) {
         return;
       }
 
-      // 3️⃣ Lead-type clients: silently enter lead AI-chat state so every
-      //    AI reply includes the "Leave your contact" button for lead capture.
+      // 3️⃣ AI-off guard — when an admin has taken over, skip AI entirely
+      //    but still persist the user message (which also broadcasts to admins).
       const client = await this.clientService.findOne(session.clientId);
+      if (!session.isAiActive) {
+        await this.chatService.addMessage(chatId, client.id, 'user', text);
+        return;
+      }
+
+      // 4️⃣ Lead-type clients: silently enter lead AI-chat state so every
+      //    AI reply includes the "Leave your contact" button for lead capture.
       if (client.type === 'lead') {
         this.flowRouter.initLeadState(chatId, client.id);
-        await this.flowRouter.handleMessage(chatId, text, this.bot, lang);
+        await this.flowRouter.handleMessage(chatId, text, bot, lang);
         return;
       }
 
-      // 4️⃣ Order-type clients: plain AI chat
-      await this.handleAiChat(chatId, session, lang, text);
+      // 5️⃣ Order-type clients: plain AI chat
+      await this.handleAiChat(bot, chatId, session, lang, text);
     } catch (err) {
       this.logger.error(
         `handleMessage error — chat ${chatId}: ${(err as Error).message}`,
         (err as Error).stack,
       );
       try {
-        await this.bot.sendMessage(chatId, this.i18n.t('error_fallback', 'en'));
+        await bot.sendMessage(chatId, this.i18n.t('error_fallback', 'en'));
       } catch {
         // ignore secondary failure
       }
@@ -678,6 +769,7 @@ export class BotService implements OnModuleInit {
   // ── Route reply‑keyboard button presses ─────────────────
 
   private async routeMenuButton(
+    bot: TelegramBot,
     chatId: number,
     text: string,
     lang: Lang,
@@ -697,7 +789,7 @@ export class BotService implements OnModuleInit {
         if (!session) return false;
         const client = await this.clientService.findOne(session.clientId);
         if (!client.hasProducts) return false;
-        await this.showProducts(chatId, client, lang);
+        await this.showProducts(bot, chatId, client, lang);
         return true;
       }
       case 'services': {
@@ -705,7 +797,7 @@ export class BotService implements OnModuleInit {
         if (!session) return false;
         const client = await this.clientService.findOne(session.clientId);
         if (!client.hasServices) return false;
-        await this.showServices(chatId, client, lang);
+        await this.showServices(bot, chatId, client, lang);
         return true;
       }
       case 'order': {
@@ -713,11 +805,10 @@ export class BotService implements OnModuleInit {
         if (!session) return false;
         const client = await this.clientService.findOne(session.clientId);
         if (client.type === 'lead' || !client.hasProducts) return false;
-        // Remove ReplyKeyboard for a clean flow experience
-        await this.bot.sendMessage(chatId, this.i18n.t('flow_starting', lang), {
+        await bot.sendMessage(chatId, this.i18n.t('flow_starting', lang), {
           reply_markup: this.ui.removeKeyboard(),
         });
-        await this.flowRouter.startFlow(chatId, client, this.bot, lang);
+        await this.flowRouter.startFlow(chatId, client, bot, lang);
         return true;
       }
       case 'about': {
@@ -725,7 +816,7 @@ export class BotService implements OnModuleInit {
         if (!session) return false;
         const client = await this.clientService.findOne(session.clientId);
         if (client.type !== 'lead' || !client.hasServices) return false;
-        await this.showAbout(chatId, client, lang);
+        await this.showAbout(bot, chatId, client, lang);
         this.flowRouter.initLeadState(chatId, client.id);
         return true;
       }
@@ -734,19 +825,19 @@ export class BotService implements OnModuleInit {
         if (!session) return false;
         const client = await this.clientService.findOne(session.clientId);
         if (client.type !== 'lead' || !client.hasProducts) return false;
-        await this.showPrices(chatId, client, lang);
+        await this.showPrices(bot, chatId, client, lang);
         this.flowRouter.initLeadState(chatId, client.id);
         return true;
       }
       case 'contact':
-        await this.showContact(chatId);
+        await this.showContact(bot, chatId);
         return true;
       case 'language':
-        await this.handleLanguageCommand(chatId);
+        await this.handleLanguageCommand(bot, chatId);
         return true;
       case 'ai_chat':
-        await this.sendTyping(chatId);
-        void this.bot.sendMessage(chatId, this.i18n.t('ai_chat_active', lang), {
+        await this.sendTyping(bot, chatId);
+        void bot.sendMessage(chatId, this.i18n.t('ai_chat_active', lang), {
           parse_mode: 'Markdown',
         });
         return true;
@@ -755,9 +846,10 @@ export class BotService implements OnModuleInit {
     }
   }
 
-  // ── AI chat handler ─────────────────────────────────────
+  // ── AI chat handler (order-type: generic) ───────────────
 
   private async handleAiChat(
+    bot: TelegramBot,
     chatId: number,
     session: { clientId: number; lang: string },
     lang: Lang,
@@ -766,16 +858,164 @@ export class BotService implements OnModuleInit {
     const client = await this.clientService.findOne(session.clientId);
     const systemPrompt = this.clientService.buildPrompt(client, lang);
 
-    void this.bot.sendChatAction(chatId, 'typing');
+    void bot.sendChatAction(chatId, 'typing');
 
     const history = await this.chatService.getRecentHistory(chatId, client.id);
     await this.chatService.addMessage(chatId, client.id, 'user', text);
 
-    const reply = await this.aiService.ask(text, systemPrompt, history);
+    const reply = await this.aiService.ask(text, systemPrompt, history, {
+      aiProvider: client.aiProvider,
+      aiModel: client.aiModel,
+    });
 
     await this.chatService.addMessage(chatId, client.id, 'assistant', reply);
 
-    void this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+    void bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+  }
+
+  // ── Sales AI chat handler (lead-type) ────────────────────
+
+  /**
+   * Called by LeadFlowService.handleAiChat — routes the user message through
+   * SalesAiService for BANT qualification, then sends the reply with smart
+   * intent-based inline buttons.
+   */
+  async handleSalesAiChat(
+    bot: TelegramBot,
+    chatId: number,
+    clientId: number,
+    lang: Lang,
+    text: string,
+  ): Promise<{
+    reply: string;
+    session:
+      | import('../chat/entities/chat-session.entity.js').ChatSession
+      | null;
+  }> {
+    const client = await this.clientService.findOne(clientId);
+    const catalog = this.buildCatalogString(client);
+
+    void bot.sendChatAction(chatId, 'typing');
+
+    const history = await this.chatService.getRecentHistory(chatId, clientId);
+
+    const reply = await this.salesAi.generateSalesReply({
+      chatId,
+      clientId,
+      userMessage: text,
+      promptContext: {
+        businessName: client.name,
+        businessPitch: client.systemPrompt,
+        lang: lang as 'uz' | 'ru' | 'en',
+        catalog,
+      },
+      history,
+      aiProvider: client.aiProvider,
+      aiModel: client.aiModel,
+    });
+
+    await this.chatService.addMessage(chatId, clientId, 'assistant', reply);
+
+    // Fetch updated session for smart keyboard
+    const updatedSession = await this.chatService.getSession(chatId);
+
+    return { reply, session: updatedSession };
+  }
+
+  // ── Smart keyboard builder ──────────────────────────────
+  /**
+   * Build intent-based inline buttons for lead-type conversations.
+   * - HOT lead (score > 80):  📞 Request a Call
+   * - High/buying intent:     📋 See Catalog (if client has products/services)
+   * - Otherwise:              📝 Leave Contact (always present for leads)
+   */
+  buildSmartKeyboard(
+    session:
+      | import('../chat/entities/chat-session.entity.js').ChatSession
+      | null,
+    lang: Lang,
+    hasProducts: boolean,
+    hasServices: boolean,
+  ): TelegramBot.InlineKeyboardButton[][] {
+    const btns: TelegramBot.InlineKeyboardButton[][] = [];
+
+    if (!session) {
+      btns.push([
+        {
+          text: `📝 ${this.i18n.t('btn_leave_contact', lang)}`,
+          callback_data: 'flow:leave_contact',
+        },
+      ]);
+      return btns;
+    }
+
+    // HOT lead — top-priority CTA
+    if (session.score > 80) {
+      btns.push([
+        {
+          text: `📞 ${this.i18n.t('btn_request_call', lang)}`,
+          callback_data: 'flow:leave_contact',
+        },
+      ]);
+    } else {
+      // Standard leave-contact CTA
+      btns.push([
+        {
+          text: `📝 ${this.i18n.t('btn_leave_contact', lang)}`,
+          callback_data: 'flow:leave_contact',
+        },
+      ]);
+    }
+
+    // High-intent: show catalog link
+    if (session.score >= 40 && (hasProducts || hasServices)) {
+      btns.push([
+        {
+          text: `📋 ${this.i18n.t('btn_see_catalog', lang)}`,
+          callback_data: hasServices ? 'menu:services' : 'menu:products',
+        },
+      ]);
+    }
+
+    return btns;
+  }
+
+  // ── Minimal reply keyboard for lead-type (Language + Contact) ─
+  private minimalLeadKeyboard(lang: Lang): TelegramBot.ReplyKeyboardMarkup {
+    return {
+      keyboard: [
+        [
+          { text: this.i18n.t('btn_language', lang) },
+          { text: this.i18n.t('btn_contact', lang) },
+        ],
+      ],
+      resize_keyboard: true,
+      one_time_keyboard: false,
+    };
+  }
+
+  // ── Build catalog string for SalesAiService prompt context ─
+  private buildCatalogString(client: Client): string {
+    const lines: string[] = [];
+    const products = client.products?.filter((p) => p.isActive) ?? [];
+    const services = client.services?.filter((s) => s.isActive) ?? [];
+
+    for (const p of products) {
+      let line = `• ${p.name}`;
+      if (p.price != null)
+        line += ` — ${formatPrice(p.price, client.currency)}`;
+      if (p.description) line += `: ${p.description}`;
+      lines.push(line);
+    }
+    for (const s of services) {
+      let line = `• ${s.name}`;
+      if (s.price != null)
+        line += ` — ${formatPrice(s.price, client.currency)}`;
+      if (s.description) line += `: ${s.description}`;
+      lines.push(line);
+    }
+
+    return lines.join('\n');
   }
 
   // ═══════════════════════════════════════════════════════
@@ -783,8 +1023,8 @@ export class BotService implements OnModuleInit {
   // ═══════════════════════════════════════════════════════
 
   /** Simulate typing for a more natural feel */
-  private async sendTyping(chatId: number): Promise<void> {
-    void this.bot.sendChatAction(chatId, 'typing');
+  private async sendTyping(bot: TelegramBot, chatId: number): Promise<void> {
+    void bot.sendChatAction(chatId, 'typing');
     await this.delay(TYPING_DELAY_MS);
   }
 
@@ -800,9 +1040,7 @@ export class BotService implements OnModuleInit {
   }
 
   /** Get the full client for the chat session */
-  private async getClient(
-    chatId: number,
-  ): Promise<import('../client/entities/client.entity.js').Client | undefined> {
+  private async getClient(chatId: number): Promise<Client | undefined> {
     const session = await this.chatService.getSession(chatId);
     if (!session) return undefined;
     try {
@@ -810,5 +1048,15 @@ export class BotService implements OnModuleInit {
     } catch {
       return undefined;
     }
+  }
+
+  /** Prefer the bot's binding; fall back to the chat session */
+  private async resolveClientId(
+    chatId: number,
+    binding: BotBinding,
+  ): Promise<number | null> {
+    if (binding.clientId != null) return binding.clientId;
+    const session = await this.chatService.getSession(chatId);
+    return session?.clientId ?? null;
   }
 }

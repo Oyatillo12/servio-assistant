@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { api, type Client } from '@/api';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { formatPrice } from '@/lib/currency';
 
 import { CatalogCard } from './components/catalog-card';
 import { CatalogFormModal, type CatalogFormData } from './components/catalog-form-modal';
@@ -20,19 +21,7 @@ export function ServicesSection({ client, onUpdate }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<CatalogFormData | null>(null);
 
-  const formatPrice = (price: number) => {
-    const formatted = new Intl.NumberFormat('en-US', {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 2,
-    }).format(price).replace(/,/g, ' ');
-
-    switch (client.currency) {
-      case 'UZS': return `${formatted} so'm`;
-      case 'RUB': return `${formatted} ₽`;
-      case 'USD': return `$${formatted}`;
-      default: return `${formatted} ${client.currency}`;
-    }
-  };
+  const priceFormatter = (price: number) => formatPrice(price, client.currency);
 
   const handleOpenAdd = () => {
     setEditingItem(null);
@@ -98,7 +87,7 @@ export function ServicesSection({ client, onUpdate }: Props) {
                 <CatalogCard
                   key={s.id}
                   item={s}
-                  currencyFormat={formatPrice}
+                  currencyFormat={priceFormatter}
                   onEdit={(item) => handleOpenEdit({ ...item, price: item.price ?? undefined })}
                   onRemove={handleRemove}
                 />

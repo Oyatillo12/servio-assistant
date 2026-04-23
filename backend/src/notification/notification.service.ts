@@ -4,6 +4,7 @@ import { I18nService, type Lang } from '../i18n/i18n.service.js';
 import type { Client } from '../client/entities/client.entity.js';
 import type { Order } from '../order/entities/order.entity.js';
 import type { Lead } from '../lead/entities/lead.entity.js';
+import { formatPrice } from '../common/utils/currency.util.js';
 
 @Injectable()
 export class NotificationService {
@@ -18,14 +19,23 @@ export class NotificationService {
     lang: Lang,
   ): Promise<void> {
     const itemLines = order.items.map((item) => {
-      const priceStr = item.price != null ? ` x $${item.price}` : '';
+      const priceStr =
+        item.price != null
+          ? ` x ${formatPrice(item.price, client.currency)}`
+          : '';
       return `  • ${item.productName} — ${item.quantity}${priceStr}`;
     });
+
+    const total = order.items.reduce((sum, i) => {
+      if (i.price == null) return sum;
+      return sum + Number(i.price) * i.quantity;
+    }, 0);
+    const totalLine = total > 0 ? `\n💰 ${formatPrice(total, client.currency)}` : '';
 
     const text = this.i18n.t('admin_new_order', lang, {
       orderId: String(order.id),
       clientName: client.name,
-      items: itemLines.join('\n'),
+      items: itemLines.join('\n') + totalLine,
       phone: order.phone,
       address: order.address || '—',
     });

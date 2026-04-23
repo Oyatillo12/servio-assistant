@@ -17,6 +17,8 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { BotTypePicker } from "./bot-type-picker";
+import { getStarterPrompt } from "./prompt-templates";
 
 /**
  * "New client" form. Existing clients are edited via ClientDetailLayout + GeneralTab.
@@ -126,34 +128,45 @@ export function ClientEditPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="bot-type">{t("bot_type")}</Label>
-                <select
-                  id="bot-type"
-                  value={botType}
-                  onChange={(e) => setBotType(e.target.value as "order" | "lead")}
-                  className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                >
-                  <option value="order">{t("bot_type_order")}</option>
-                  <option value="lead">{t("bot_type_lead")}</option>
-                </select>
-                <p className="text-[11px] text-muted-foreground">{t("bot_type_hint")}</p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="default-lang">{t("default_language")}</Label>
-                <select
-                  id="default-lang"
-                  value={defaultLang}
-                  onChange={(e) => setDefaultLang(e.target.value as "uz" | "ru" | "en")}
-                  className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                >
-                  <option value="uz">O'zbek</option>
-                  <option value="ru">Русский</option>
-                  <option value="en">English</option>
-                </select>
-                <p className="text-[11px] text-muted-foreground">{t("default_language_hint")}</p>
-              </div>
+            <div className="space-y-2">
+              <Label>{t("bot_type")}</Label>
+              <BotTypePicker
+                value={botType}
+                onChange={(next) => {
+                  setBotType(next);
+                  // Auto-fill starter template if prompt is empty or was a template for the other type
+                  const otherStarter = getStarterPrompt(
+                    next === "order" ? "lead" : "order",
+                    defaultLang,
+                  );
+                  if (!systemPrompt.trim() || systemPrompt === otherStarter) {
+                    setSystemPrompt(getStarterPrompt(next, defaultLang));
+                  }
+                }}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="default-lang">{t("default_language")}</Label>
+              <select
+                id="default-lang"
+                value={defaultLang}
+                onChange={(e) => {
+                  const next = e.target.value as "uz" | "ru" | "en";
+                  // Regenerate starter prompt in the new language if user was using one
+                  const currentStarter = getStarterPrompt(botType, defaultLang);
+                  if (!systemPrompt.trim() || systemPrompt === currentStarter) {
+                    setSystemPrompt(getStarterPrompt(botType, next));
+                  }
+                  setDefaultLang(next);
+                }}
+                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="uz">O'zbek</option>
+                <option value="ru">Русский</option>
+                <option value="en">English</option>
+              </select>
+              <p className="text-[11px] text-muted-foreground">{t("default_language_hint")}</p>
             </div>
 
             <div className="space-y-2">
@@ -173,14 +186,23 @@ export function ClientEditPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="prompt">{t("system_prompt")}</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="prompt">{t("system_prompt")}</Label>
+                <button
+                  type="button"
+                  onClick={() => setSystemPrompt(getStarterPrompt(botType, defaultLang))}
+                  className="text-[11px] text-primary hover:underline"
+                >
+                  {t("use_starter_template")}
+                </button>
+              </div>
               <Textarea
                 id="prompt"
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
                 required
                 rows={6}
-                placeholder="You are a helpful assistant for Acme Corp..."
+                placeholder={getStarterPrompt(botType, defaultLang)}
                 className="font-mono text-sm resize-y bg-muted/30"
               />
               <p className="text-[11px] text-muted-foreground">{t("system_prompt_hint")}</p>

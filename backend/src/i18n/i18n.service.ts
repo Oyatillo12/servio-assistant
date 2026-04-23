@@ -359,6 +359,16 @@ const translations: Record<string, Record<Lang, string>> = {
     ru: 'Оставить контакт',
     en: 'Leave your contact',
   },
+  btn_request_call: {
+    uz: "Qo'ng'iroq so'rash",
+    ru: 'Запросить звонок',
+    en: 'Request a Call',
+  },
+  btn_see_catalog: {
+    uz: "Katalogni ko'rish",
+    ru: 'Посмотреть каталог',
+    en: 'See Catalog',
+  },
   btn_main_menu: {
     uz: 'Asosiy menyu',
     ru: 'Главное меню',

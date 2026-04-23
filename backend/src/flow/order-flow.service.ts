@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
 import { FlowStateService, OrderStep } from './flow-state.service.js';
 import type { CartItem } from './flow-state.service.js';
@@ -16,6 +16,7 @@ export class OrderFlowService {
   constructor(
     private readonly state: FlowStateService,
     private readonly orderService: OrderService,
+    @Inject(forwardRef(() => ClientService))
     private readonly clientService: ClientService,
     private readonly i18n: I18nService,
     private readonly notificationService: NotificationService,
@@ -181,7 +182,9 @@ export class OrderFlowService {
 
     const client = await this.clientService.findOne(clientId);
     // Only match active products to prevent ordering inactive/deleted items
-    const product = client.products.find((p) => p.id === productId && p.isActive);
+    const product = client.products.find(
+      (p) => p.id === productId && p.isActive,
+    );
 
     if (!product) {
       // Product unavailable — show product list again instead of leaving user stuck
@@ -284,7 +287,10 @@ export class OrderFlowService {
     }
 
     const lines = cart.map((item, i) => {
-      const priceStr = item.price != null ? ` x ${formatPrice(item.price, client.currency)}` : '';
+      const priceStr =
+        item.price != null
+          ? ` x ${formatPrice(item.price, client.currency)}`
+          : '';
       return `${i + 1}. *${item.productName}* — ${item.quantity}${priceStr}`;
     });
 
@@ -437,7 +443,10 @@ export class OrderFlowService {
     const address = s.data['address'] as string | null;
 
     const itemLines = cart.map((item) => {
-      const priceStr = item.price != null ? ` x ${formatPrice(item.price, client.currency)}` : '';
+      const priceStr =
+        item.price != null
+          ? ` x ${formatPrice(item.price, client.currency)}`
+          : '';
       return `  • ${item.productName} — ${item.quantity}${priceStr}`;
     });
 

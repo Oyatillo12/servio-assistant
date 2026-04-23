@@ -3,6 +3,8 @@ import { DemoSeederService } from './database/demo.seeder.js';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
 import { BotModule } from './bot/bot.module.js';
 import { AiModule } from './ai/ai.module.js';
 import { ClientModule } from './client/client.module.js';
@@ -13,6 +15,7 @@ import { AnalyticsModule } from './analytics/analytics.module.js';
 import { OrderModule } from './order/order.module.js';
 import { LeadModule } from './lead/lead.module.js';
 import { NotificationModule } from './notification/notification.module.js';
+import { RecoveryModule } from './recovery/recovery.module.js';
 
 @Module({
   imports: [
@@ -35,6 +38,9 @@ import { NotificationModule } from './notification/notification.module.js';
     // Rate limiting: 60 requests per minute per IP
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
 
+    EventEmitterModule.forRoot(),
+    ScheduleModule.forRoot(),
+
     I18nModule,
     AuthModule,
     AiModule,
@@ -45,6 +51,7 @@ import { NotificationModule } from './notification/notification.module.js';
     LeadModule,
     NotificationModule,
     BotModule,
+    RecoveryModule,
   ],
   providers: [DemoSeederService],
 })

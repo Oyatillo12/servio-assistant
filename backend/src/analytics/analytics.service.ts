@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { MoreThanOrEqual } from 'typeorm';
 import { ChatHistory } from '../chat/entities/chat-history.entity.js';
 import { ChatSession } from '../chat/entities/chat-session.entity.js';
+import { LeadStatus } from '../chat/entities/lead-status.enum.js';
 import { Client } from '../client/entities/client.entity.js';
 import { OrderService } from '../order/order.service.js';
 import { LeadService } from '../lead/lead.service.js';
@@ -12,6 +14,14 @@ export interface DashboardStats {
   totalConversations: number;
   totalMessages: number;
   messagesToday: number;
+  /** New ChatSession rows created since midnight (local server time). */
+  conversationsToday: number;
+  /** Orders created since midnight. */
+  ordersToday: number;
+  /** Leads created since midnight. */
+  leadsToday: number;
+  /** Active hot sessions — score > 80 and not closed. */
+  hotLeadsCount: number;
   totalOrders: number;
   totalLeads: number;
   recentActivity: Array<{
@@ -40,18 +50,36 @@ export class AnalyticsService {
     const clientWhere = clientId ? { id: clientId } : {};
     const historyWhere = clientId ? { clientId } : {};
 
+    // Midnight cutoff used by every "today" counter below.
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const [
       totalClients,
       totalConversations,
       totalMessages,
       totalOrders,
       totalLeads,
+      conversationsToday,
+      ordersToday,
+      leadsToday,
+      hotLeadsCount,
     ] = await Promise.all([
       this.clientRepo.count({ where: clientWhere }),
       this.sessionRepo.count(clientId ? { where: { clientId } } : {}),
       this.historyRepo.count({ where: historyWhere }),
       this.orderService.countByClient(clientId),
       this.leadService.countByClient(clientId),
+      this.sessionRepo.count({
+        where: {
+          createdAt: MoreThanOrEqual(today),
+          ...(clientId ? { clientId } : {}),
+        },
+      }),
+      this.orderService.countSince(today, clientId),
+      this.leadService.countSince(today, clientId),
+      this.countHotSessions(clientId),
     ]);
 
     const [recentOrders, recentLeads] = await Promise.all([
@@ -59,9 +87,6 @@ export class AnalyticsService {
       this.leadService.findRecent(clientId),
     ]);
 
-    // Messages today
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
     const todayQuery = this.historyRepo
       .createQueryBuilder('h')
       .where('h.createdAt >= :today', { today: today.toISOString() });
@@ -100,12 +125,26 @@ export class AnalyticsService {
       totalConversations,
       totalMessages,
       messagesToday,
+      conversationsToday,
+      ordersToday,
+      leadsToday,
+      hotLeadsCount,
       totalOrders,
       totalLeads,
       recentActivity,
       recentOrders,
       recentLeads,
     };
+  }
+
+  /** Count active hot sessions (score > 80 and not closed). */
+  private async countHotSessions(clientId?: number): Promise<number> {
+    const qb = this.sessionRepo
+      .createQueryBuilder('s')
+      .where('s.score > :threshold', { threshold: 80 })
+      .andWhere('s.leadStatus != :closed', { closed: LeadStatus.CLOSED });
+    if (clientId) qb.andWhere('s.clientId = :clientId', { clientId });
+    return qb.getCount();
   }
 
   async getClientMessages(

@@ -1,12 +1,14 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
 import { FlowStateService, LeadStep } from './flow-state.service.js';
 import { LeadService } from '../lead/lead.service.js';
 import { AiService } from '../ai/ai.service.js';
 import { ClientService } from '../client/client.service.js';
 import { ChatService } from '../chat/chat.service.js';
+import { ChatGateway } from '../chat/chat.gateway.js';
 import { I18nService, type Lang } from '../i18n/i18n.service.js';
 import { NotificationService } from '../notification/notification.service.js';
+import { BotService } from '../bot/bot.service.js';
 
 @Injectable()
 export class LeadFlowService {
@@ -16,10 +18,14 @@ export class LeadFlowService {
     private readonly state: FlowStateService,
     private readonly leadService: LeadService,
     private readonly aiService: AiService,
+    @Inject(forwardRef(() => ClientService))
     private readonly clientService: ClientService,
     private readonly chatService: ChatService,
+    private readonly chatGateway: ChatGateway,
     private readonly i18n: I18nService,
     private readonly notificationService: NotificationService,
+    @Inject(forwardRef(() => BotService))
+    private readonly botService: BotService,
   ) {}
 
   // ═══════════════════════════════════════════════════════
@@ -147,24 +153,45 @@ export class LeadFlowService {
     // Strip "Leave contact" buttons from the previous AI response
     await this.state.stripOldButtons(chatId, bot);
 
-    const client = await this.clientService.findOne(clientId);
-    const systemPrompt = this.clientService.buildPrompt(client, lang);
-
-    void bot.sendChatAction(chatId, 'typing');
-
-    const history = await this.chatService.getRecentHistory(chatId, clientId);
+    // Persist user message
     await this.chatService.addMessage(chatId, clientId, 'user', text);
 
-    const reply = await this.aiService.ask(text, systemPrompt, history);
-    await this.chatService.addMessage(chatId, clientId, 'assistant', reply);
+    // Broadcast user message to admins
+    this.chatGateway.broadcastChatMessage({
+      chatId,
+      clientId,
+      role: 'user',
+      message: text,
+      at: new Date().toISOString(),
+    });
+
+    // AI-off guard — admin has taken over
+    const session = await this.chatService.getSession(chatId);
+    if (session && !session.isAiActive) {
+      return;
+    }
+
+    // Delegate to Sales AI pipeline (BANT qualification + scoring)
+    const { reply, session: updatedSession } =
+      await this.botService.handleSalesAiChat(bot, chatId, clientId, lang, text);
 
     this.state.updateData(chatId, 'lastQuestion', text);
     this.state.updateData(chatId, 'aiNotes', reply);
 
-    // Send AI response with "Leave your contact" button as a new message
+    // Get client for smart keyboard context
+    const client = await this.clientService.findOne(clientId);
+
+    // Send AI response with smart intent-based inline buttons
+    const keyboard = this.botService.buildSmartKeyboard(
+      updatedSession,
+      lang,
+      client.hasProducts,
+      client.hasServices,
+    );
+
     const sent = await bot.sendMessage(chatId, reply, {
       parse_mode: 'Markdown',
-      reply_markup: this.aiChatKeyboard(lang),
+      reply_markup: { inline_keyboard: keyboard },
     });
     this.state.setMessageId(chatId, sent.message_id);
   }

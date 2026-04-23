@@ -18,11 +18,16 @@ export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
   @Get('dashboard')
-  dashboard(@Request() req: { user: User }) {
+  dashboard(
+    @Request() req: { user: User },
+    @Query('clientId') clientIdStr?: string,
+  ) {
     const clientId =
       req.user.role === Role.CLIENT_ADMIN
         ? (req.user.clientId ?? undefined)
-        : undefined;
+        : clientIdStr
+          ? Number(clientIdStr)
+          : undefined;
     return this.analyticsService.getDashboard(clientId);
   }
 

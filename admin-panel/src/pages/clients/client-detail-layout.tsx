@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { useParams, Outlet, useNavigate, useLocation } from "react-router-dom";
+import { useParams, Outlet, useLocation } from "react-router-dom";
 import {
+  LayoutDashboard,
   Settings2,
   ShoppingBag,
   Wrench,
@@ -8,16 +9,18 @@ import {
   UserCheck,
   Sliders,
   MessageSquare,
-  ArrowLeft,
+  QrCode,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { api, type Client } from "@/api";
 import { useAuth } from "@/hooks/use-auth";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { TabsBar, type TabBarItem } from "@/components/ui/tabs-bar";
 import { FormSkeleton } from "@/components/loading-skeleton";
+import { BackButton } from "@/components/back-button";
+import { BotShareDialog } from "@/components/bot-share-dialog";
 
 export interface ClientDetailContext {
   client: Client;
@@ -26,7 +29,6 @@ export interface ClientDetailContext {
 
 export function ClientDetailLayout() {
   const { id } = useParams();
-  const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
   const { isSuperAdmin } = useAuth();
@@ -60,6 +62,11 @@ export function ClientDetailLayout() {
     {
       to: basePath,
       end: true,
+      label: t("tab_overview"),
+      icon: LayoutDashboard,
+    },
+    {
+      to: `${basePath}/general`,
       label: t("tab_general"),
       icon: Settings2,
     },
@@ -131,17 +138,11 @@ export function ClientDetailLayout() {
     <div className="animate-page-enter pb-12">
       {/* Header */}
       <div className="mb-4">
-        {isSuperAdmin && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground mb-3 -ml-2"
-            onClick={() => navigate("/clients")}
-          >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            {t("nav_clients")}
-          </Button>
-        )}
+        <BackButton
+          className="mb-3"
+          fallbackTo={isSuperAdmin ? "/clients" : undefined}
+          label={isSuperAdmin ? t("nav_clients") : undefined}
+        />
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div className="min-w-0">
             <h1 className="text-xl sm:text-2xl font-semibold tracking-tight truncate">
@@ -159,9 +160,17 @@ export function ClientDetailLayout() {
               )}
             </div>
           </div>
-          <div className="text-xs text-muted-foreground sm:hidden">
-            {current?.icon && <current.icon className="inline w-3.5 h-3.5 mr-1" />}
-            <span>{current?.label}</span>
+          <div className="flex items-center justify-between sm:justify-end gap-2">
+            <div className="text-xs text-muted-foreground sm:hidden">
+              {current?.icon && <current.icon className="inline w-3.5 h-3.5 mr-1" />}
+              <span>{current?.label}</span>
+            </div>
+            <BotShareDialog slug={client.slug} clientName={client.name} botUsername={client.botUsername}>
+              <Button variant="outline" size="sm" className="shrink-0">
+                <QrCode className="w-4 h-4 sm:mr-2" />
+                <span className="hidden sm:inline">{t("share_bot")}</span>
+              </Button>
+            </BotShareDialog>
           </div>
         </div>
       </div>

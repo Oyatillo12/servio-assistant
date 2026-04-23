@@ -59,4 +59,13 @@ export class LeadService {
   async countByClient(clientId?: number): Promise<number> {
     return this.leadRepo.count(clientId ? { where: { clientId } } : {});
   }
+
+  /** Count leads created at or after `since` (used by "today" dashboard stats). */
+  async countSince(since: Date, clientId?: number): Promise<number> {
+    const qb = this.leadRepo
+      .createQueryBuilder('l')
+      .where('l.createdAt >= :since', { since });
+    if (clientId) qb.andWhere('l.clientId = :clientId', { clientId });
+    return qb.getCount();
+  }
 }

@@ -55,6 +55,10 @@ export interface Client {
   hasServices: boolean;
   adminChatId: number | null;
   botConfig: string | null;
+  /** Dedicated bot @username when this client uses its own bot; null = general bot */
+  botUsername: string | null;
+  aiProvider: "gemini" | "openai";
+  aiModel: string | null;
   products: Product[];
   services: Service[];
   createdAt: string;
@@ -87,6 +91,10 @@ export interface DashboardStats {
   totalConversations: number;
   totalMessages: number;
   messagesToday: number;
+  conversationsToday: number;
+  ordersToday: number;
+  leadsToday: number;
+  hotLeadsCount: number;
   totalOrders: number;
   totalLeads: number;
   recentActivity: Array<{
@@ -105,6 +113,22 @@ export interface ChatMessage {
   role: "user" | "assistant";
   message: string;
   createdAt: string;
+}
+
+export type LeadStatusValue = "cold" | "warm" | "hot" | "closed";
+
+export interface LiveSession {
+  id: number;
+  chatId: number;
+  clientId: number;
+  lang: string;
+  score: number;
+  leadStatus: LeadStatusValue;
+  isAiActive: boolean;
+  metadata: Record<string, unknown> | null;
+  lastMessageAt: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface OrderItemData {
@@ -169,6 +193,36 @@ async function request<T>(url: string, opts?: RequestInit): Promise<T> {
   return res.json();
 }
 
+/**
+ * Fetch a file from the API and trigger a browser download.
+ * Use for CSV/PDF-style endpoints where we can't rely on an anchor tag
+ * (those can't send the Authorization header).
+ */
+async function downloadAs(url: string, filename: string): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  const blob = await res.blob();
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(href);
+}
+
+function qs(params: Record<string, unknown>): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== false && v !== "") {
+      p.set(k, String(v));
+    }
+  }
+  return p.toString();
+}
+
 // ── API ────────────────────────────────────────────────────
 
 export const api = {
@@ -223,13 +277,21 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    update: (id: number, data: Partial<Client>) =>
+    update: (
+      id: number,
+      data: Partial<Client> & { botToken?: string | null },
+    ) =>
       request<Client>(`${API}/clients/${id}`, {
         method: "PATCH",
         body: JSON.stringify(data),
       }),
     remove: (id: number) =>
       request<void>(`${API}/clients/${id}`, { method: "DELETE" }),
+    createDemo: (type: "order" | "lead", lang: "uz" | "ru" | "en" = "en") =>
+      request<Client>(`${API}/clients/demo`, {
+        method: "POST",
+        body: JSON.stringify({ type, lang }),
+      }),
   },
 
   products: {
@@ -297,6 +359,11 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ status }),
       }),
+    exportCsv: (clientId?: number) =>
+      downloadAs(
+        `${API}/orders/export.csv${clientId ? `?clientId=${clientId}` : ""}`,
+        `orders${clientId ? `-${clientId}` : ""}.csv`,
+      ),
   },
 
   leads: {
@@ -308,10 +375,18 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ status }),
       }),
+    exportCsv: (clientId?: number) =>
+      downloadAs(
+        `${API}/leads/export.csv${clientId ? `?clientId=${clientId}` : ""}`,
+        `leads${clientId ? `-${clientId}` : ""}.csv`,
+      ),
   },
 
   analytics: {
-    dashboard: () => request<DashboardStats>(`${API}/analytics/dashboard`),
+    dashboard: (clientId?: number) =>
+      request<DashboardStats>(
+        `${API}/analytics/dashboard${clientId ? `?clientId=${clientId}` : ""}`,
+      ),
     messages: (clientId: number, page = 1) =>
       request<{ data: ChatMessage[]; total: number }>(
         `${API}/analytics/clients/${clientId}/messages?page=${page}&limit=50`,
@@ -327,6 +402,25 @@ export const api = {
       request<{ description: string }>(`${API}/ai/generate-description`, {
         method: "POST",
         body: JSON.stringify(data),
+      }),
+  },
+
+  chats: {
+    list: (clientId?: number, hotOnly?: boolean) =>
+      request<LiveSession[]>(
+        `${API}/chats?${qs({ clientId, hot: hotOnly })}`,
+      ),
+    messages: (chatId: number) =>
+      request<ChatMessage[]>(`${API}/chats/${chatId}/messages`),
+    toggleAi: (chatId: number, isAiActive: boolean) =>
+      request<LiveSession>(`${API}/chats/${chatId}/toggle-ai`, {
+        method: "POST",
+        body: JSON.stringify({ isAiActive }),
+      }),
+    sendMessage: (chatId: number, text: string) =>
+      request<{ ok: true }>(`${API}/chats/${chatId}/send-message`, {
+        method: "POST",
+        body: JSON.stringify({ text }),
       }),
   },
 };

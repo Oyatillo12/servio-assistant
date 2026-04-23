@@ -90,4 +90,13 @@ export class OrderService {
   async countByClient(clientId?: number): Promise<number> {
     return this.orderRepo.count(clientId ? { where: { clientId } } : {});
   }
+
+  /** Count orders created at or after `since` (used by "today" dashboard stats). */
+  async countSince(since: Date, clientId?: number): Promise<number> {
+    const qb = this.orderRepo
+      .createQueryBuilder('o')
+      .where('o.createdAt >= :since', { since });
+    if (clientId) qb.andWhere('o.clientId = :clientId', { clientId });
+    return qb.getCount();
+  }
 }

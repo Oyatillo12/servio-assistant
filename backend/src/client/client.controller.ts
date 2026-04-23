@@ -50,10 +50,22 @@ export class ClientController {
     return this.clientService.create(dto);
   }
 
+  @Post('demo')
+  @Roles(Role.SUPER_ADMIN)
+  createDemo(
+    @Body() body: { type?: 'order' | 'lead'; lang?: 'uz' | 'ru' | 'en' },
+  ) {
+    return this.clientService.createDemo(body.type ?? 'order', body.lang ?? 'en');
+  }
+
   @Patch(':id')
   @UseGuards(ClientAccessGuard)
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateClientDto) {
-    return this.clientService.update(id, dto);
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateClientDto,
+    @Request() req: { user: User },
+  ) {
+    return this.clientService.update(id, dto, req.user.role);
   }
 
   @Delete(':id')
