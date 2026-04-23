@@ -26,8 +26,8 @@ async function bootstrap() {
   });
   app.enableShutdownHooks();
 
-  const port = process.env.PORT ?? 3000;
-  await app.listen(port);
+  const port = process.env.PORT || 3000;
+  await app.listen(port, '0.0.0.0');
   Logger.log(`Server running on http://localhost:${port}`, 'Bootstrap');
 }
 void bootstrap();
